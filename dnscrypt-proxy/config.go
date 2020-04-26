@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/facebookgo/pidfile"
 	"github.com/jedisct1/dlog"
 	stamps "github.com/jedisct1/go-dnsstamps"
 	netproxy "golang.org/x/net/proxy"
@@ -92,6 +93,7 @@ type Config struct {
 	BlockedQueryResponse     string                      `toml:"blocked_query_response"`
 	QueryMeta                []string                    `toml:"query_meta"`
 	AnonymizedDNS            AnonymizedDNSConfig         `toml:"anonymized_dns"`
+	TLSClientAuth            TLSClientAuthConfig         `toml:"tls_client_auth"`
 }
 
 func newConfig() Config {
@@ -133,7 +135,11 @@ func newConfig() Config {
 		LBEstimator:              true,
 		BlockedQueryResponse:     "hinfo",
 		BrokenImplementations: BrokenImplementationsConfig{
-			BrokenQueryPadding: []string{"cisco", "cisco-ipv6", "cisco-familyshield", "quad9-dnscrypt-ip4-filter-alt", "quad9-dnscrypt-ip4-filter-pri", "quad9-dnscrypt-ip4-nofilter-alt", "quad9-dnscrypt-ip4-nofilter-pri", "quad9-dnscrypt-ip6-filter-alt", "quad9-dnscrypt-ip6-filter-pri", "quad9-dnscrypt-ip6-nofilter-alt", "quad9-dnscrypt-ip6-nofilter-pri"},
+			FragmentsBlocked: []string{
+				"cisco", "cisco-ipv6", "cisco-familyshield", "cisco-familyshield-ipv6",
+				"quad9-dnscrypt-ip4-filter-alt", "quad9-dnscrypt-ip4-filter-pri", "quad9-dnscrypt-ip4-nofilter-alt", "quad9-dnscrypt-ip4-nofilter-pri", "quad9-dnscrypt-ip6-filter-alt", "quad9-dnscrypt-ip6-filter-pri", "quad9-dnscrypt-ip6-nofilter-alt", "quad9-dnscrypt-ip6-nofilter-pri",
+				"cleanbrowsing-adult", "cleanbrowsing-family-ipv6", "cleanbrowsing-family", "cleanbrowsing-security",
+			},
 		},
 	}
 }
@@ -187,11 +193,13 @@ type AnonymizedDNSRouteConfig struct {
 }
 
 type AnonymizedDNSConfig struct {
-	Routes []AnonymizedDNSRouteConfig `toml:"routes"`
+	Routes           []AnonymizedDNSRouteConfig `toml:"routes"`
+	SkipIncompatible bool                       `toml:"skip_incompatible"`
 }
 
 type BrokenImplementationsConfig struct {
 	BrokenQueryPadding []string `toml:"broken_query_padding"`
+	FragmentsBlocked   []string `toml:"fragments_blocked"`
 }
 
 type LocalDoHConfig struct {
@@ -212,6 +220,16 @@ type ServerSummary struct {
 	NoFilter    bool     `json:"nofilter"`
 	Description string   `json:"description,omitempty"`
 	Stamp       string   `json:"stamp"`
+}
+
+type TLSClientAuthCredsConfig struct {
+	ServerName string `toml:"server_name"`
+	ClientCert string `toml:"client_cert"`
+	ClientKey  string `toml:"client_key"`
+}
+
+type TLSClientAuthConfig struct {
+	Creds []TLSClientAuthCredsConfig `toml:"creds"`
 }
 
 type ConfigFlags struct {
@@ -347,22 +365,30 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if len(config.ListenAddresses) == 0 && len(config.LocalDoH.ListenAddresses) == 0 {
 		dlog.Debug("No local IP/port configured")
 	}
-
-	lbStrategy := DefaultLBStrategy
-	switch strings.ToLower(config.LBStrategy) {
+	lbStrategy := LBStrategy(DefaultLBStrategy)
+	switch lbStrategyStr := strings.ToLower(config.LBStrategy); lbStrategyStr {
 	case "":
 		// default
 	case "p2":
-		lbStrategy = LBStrategyP2
+		lbStrategy = LBStrategyP2{}
 	case "ph":
-		lbStrategy = LBStrategyPH
+		lbStrategy = LBStrategyPH{}
 	case "fastest":
 	case "first":
-		lbStrategy = LBStrategyFirst
+		lbStrategy = LBStrategyFirst{}
 	case "random":
-		lbStrategy = LBStrategyRandom
+		lbStrategy = LBStrategyRandom{}
 	default:
-		dlog.Warnf("Unknown load balancing strategy: [%s]", config.LBStrategy)
+		if strings.HasPrefix(lbStrategyStr, "p") {
+			n, err := strconv.ParseInt(strings.TrimPrefix(lbStrategyStr, "p"), 10, 32)
+			if err != nil || n <= 0 {
+				dlog.Warnf("Invalid load balancing strategy: [%s]", config.LBStrategy)
+			} else {
+				lbStrategy = LBStrategyPN{n: int(n)}
+			}
+		} else {
+			dlog.Warnf("Unknown load balancing strategy: [%s]", config.LBStrategy)
+		}
 	}
 	proxy.serversInfo.lbStrategy = lbStrategy
 	proxy.serversInfo.lbEstimator = config.LBEstimator
@@ -472,7 +498,23 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		}
 		proxy.routes = &routes
 	}
-	proxy.serversWithBrokenQueryPadding = config.BrokenImplementations.BrokenQueryPadding
+	proxy.skipAnonIncompatbibleResolvers = config.AnonymizedDNS.SkipIncompatible
+
+	configClientCreds := config.TLSClientAuth.Creds
+	creds := make(map[string]DOHClientCreds)
+	for _, configClientCred := range configClientCreds {
+		credFiles := DOHClientCreds{
+			clientCert: configClientCred.ClientCert,
+			clientKey:  configClientCred.ClientKey,
+		}
+		creds[configClientCred.ServerName] = credFiles
+	}
+	proxy.dohCreds = &creds
+
+	// Backwards compatibility
+	config.BrokenImplementations.FragmentsBlocked = append(config.BrokenImplementations.FragmentsBlocked, config.BrokenImplementations.BrokenQueryPadding...)
+
+	proxy.serversBlockingFragments = config.BrokenImplementations.BrokenQueryPadding
 
 	if *flags.ListAll {
 		config.ServerNames = nil
@@ -502,10 +544,28 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if proxy.showCerts {
 		proxy.listenAddresses = nil
 	}
-	dlog.Noticef("dnscrypt-proxy %s", AppVersion)
+	if !proxy.child {
+		dlog.Noticef("dnscrypt-proxy %s", AppVersion)
+	}
 	if err := NetProbe(netprobeAddress, netprobeTimeout); err != nil {
 		return err
 	}
+
+	for _, listenAddrStr := range proxy.listenAddresses {
+		proxy.addDNSListener(listenAddrStr)
+	}
+	for _, listenAddrStr := range proxy.localDoHListenAddresses {
+		proxy.addLocalDoHListener(listenAddrStr)
+	}
+	_ = pidfile.Write()
+	// if 'userName' is set and we are the parent process drop privilege and exit
+	if len(proxy.userName) > 0 && !proxy.child {
+		proxy.dropPrivilege(proxy.userName, FileDescriptors)
+	}
+	if err := proxy.SystemDListeners(); err != nil {
+		dlog.Fatal(err)
+	}
+
 	if !config.OfflineMode {
 		if err := config.loadSources(proxy); err != nil {
 			return err
@@ -721,7 +781,7 @@ func cdLocal() {
 	exeFileName, err := os.Executable()
 	if err != nil {
 		dlog.Warnf("Unable to determine the executable directory: [%s] -- You will need to specify absolute paths in the configuration file", err)
-	} else if err = os.Chdir(filepath.Dir(exeFileName)); err != nil {
+	} else if err := os.Chdir(filepath.Dir(exeFileName)); err != nil {
 		dlog.Warnf("Unable to change working directory to [%s]: %s", exeFileName, err)
 	}
 }

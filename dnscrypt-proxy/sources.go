@@ -45,7 +45,7 @@ func (source *Source) checkSignature(bin, sig []byte) (err error) {
 	if signature, err = minisign.DecodeSignature(string(sig)); err == nil {
 		_, err = source.minisignKey.Verify(bin, signature)
 	}
-	return
+	return err
 }
 
 // timeNow can be replaced by tests to provide a static value

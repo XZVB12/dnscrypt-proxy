@@ -59,6 +59,7 @@ type XTransport struct {
 	tlsCipherSuite           []uint16
 	proxyDialer              *netproxy.Dialer
 	httpProxyFunction        func(*http.Request) (*url.URL, error)
+	tlsClientCreds           DOHClientCreds
 }
 
 func NewXTransport() *XTransport {
@@ -156,10 +157,17 @@ func (xTransport *XTransport) rebuildTransport() {
 	if xTransport.httpProxyFunction != nil {
 		transport.Proxy = xTransport.httpProxyFunction
 	}
-	if xTransport.tlsDisableSessionTickets || xTransport.tlsCipherSuite != nil {
-		tlsClientConfig := tls.Config{
-			SessionTicketsDisabled: xTransport.tlsDisableSessionTickets,
+	tlsClientConfig := tls.Config{}
+	clientCreds := xTransport.tlsClientCreds
+	if (clientCreds != DOHClientCreds{}) {
+		cert, err := tls.LoadX509KeyPair(clientCreds.clientCert, clientCreds.clientKey)
+		if err != nil {
+			dlog.Fatalf("Unable to use certificate [%v] (key: [%v]): %v", clientCreds.clientCert, clientCreds.clientKey, err)
 		}
+		tlsClientConfig.Certificates = []tls.Certificate{cert}
+	}
+	if xTransport.tlsDisableSessionTickets || xTransport.tlsCipherSuite != nil {
+		tlsClientConfig.SessionTicketsDisabled = xTransport.tlsDisableSessionTickets
 		if !xTransport.tlsDisableSessionTickets {
 			tlsClientConfig.ClientSessionCache = tls.NewLRUClientSessionCache(10)
 		}
@@ -167,8 +175,8 @@ func (xTransport *XTransport) rebuildTransport() {
 			tlsClientConfig.PreferServerCipherSuites = false
 			tlsClientConfig.CipherSuites = xTransport.tlsCipherSuite
 		}
-		transport.TLSClientConfig = &tlsClientConfig
 	}
+	transport.TLSClientConfig = &tlsClientConfig
 	http2.ConfigureTransport(transport)
 	xTransport.transport = transport
 }
@@ -397,7 +405,6 @@ func (xTransport *XTransport) DoHQuery(useGet bool, url *url.URL, body []byte, t
 	dataType := "application/dns-message"
 	if useGet {
 		qs := url.Query()
-		qs.Add("ct", "")
 		encBody := base64.RawURLEncoding.EncodeToString(body)
 		qs.Add("dns", encBody)
 		url2 := *url

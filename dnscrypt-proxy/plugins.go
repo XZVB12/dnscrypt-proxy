@@ -86,6 +86,8 @@ type PluginsState struct {
 	cacheHit                         bool
 	returnCode                       PluginsReturnCode
 	serverName                       string
+	serverProto                      string
+	timeout                          time.Duration
 }
 
 func (proxy *Proxy) InitPluginsGlobals() error {
@@ -222,7 +224,7 @@ type Plugin interface {
 	Eval(pluginsState *PluginsState, msg *dns.Msg) error
 }
 
-func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, start time.Time) PluginsState {
+func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, serverProto string, start time.Time) PluginsState {
 	return PluginsState{
 		action:                           PluginsActionContinue,
 		returnCode:                       PluginsReturnCodePass,
@@ -237,14 +239,16 @@ func NewPluginsState(proxy *Proxy, clientProto string, clientAddr *net.Addr, sta
 		rejectTTL:                        proxy.rejectTTL,
 		questionMsg:                      nil,
 		qName:                            "",
+		serverName:                       "-",
+		serverProto:                      serverProto,
+		timeout:                          proxy.timeout,
 		requestStart:                     start,
 		maxUnencryptedUDPSafePayloadSize: MaxDNSUDPSafePacketSize,
 		sessionData:                      make(map[string]interface{}),
 	}
 }
 
-func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGlobals, packet []byte, serverName string, needsEDNS0Padding bool) ([]byte, error) {
-	pluginsState.serverName = serverName
+func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGlobals, packet []byte, needsEDNS0Padding bool) ([]byte, error) {
 	msg := dns.Msg{}
 	if err := msg.Unpack(packet); err != nil {
 		return packet, err
