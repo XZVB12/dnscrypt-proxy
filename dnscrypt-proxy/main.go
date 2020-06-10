@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime"
 	"sync"
 
 	"github.com/facebookgo/pidfile"
@@ -15,7 +16,7 @@ import (
 )
 
 const (
-	AppVersion            = "2.0.42"
+	AppVersion            = "2.0.43"
 	DefaultConfigFileName = "dnscrypt-proxy.toml"
 )
 
@@ -27,6 +28,7 @@ type App struct {
 }
 
 func main() {
+	TimezoneSetup()
 	dlog.Init("dnscrypt-proxy", dlog.SeverityNotice, "DAEMON")
 
 	seed := make([]byte, 8)
@@ -132,6 +134,7 @@ func (app *App) AppMain() {
 	app.wg.Add(1)
 	_ = pidfile.Write()
 	app.proxy.StartProxy()
+	runtime.GC()
 	<-app.quit
 	dlog.Notice("Quit signal received...")
 	app.wg.Done()

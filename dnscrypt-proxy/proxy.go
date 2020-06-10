@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,9 @@ import (
 )
 
 type Proxy struct {
+	udpListeners                   []*net.UDPConn
+	tcpListeners                   []*net.TCPListener
+	localDoHListeners              []*net.TCPListener
 	userName                       string
 	child                          bool
 	proxyPublicKey                 [32]byte
@@ -79,6 +83,20 @@ type Proxy struct {
 	showCerts                      bool
 	dohCreds                       *map[string]DOHClientCreds
 	skipAnonIncompatbibleResolvers bool
+	dns64Prefixes                  []string
+	dns64Resolvers                 []string
+}
+
+func (proxy *Proxy) registerUdpListener(conn *net.UDPConn) {
+	proxy.udpListeners = append(proxy.udpListeners, conn)
+}
+
+func (proxy *Proxy) registerTcpListener(listener *net.TCPListener) {
+	proxy.tcpListeners = append(proxy.tcpListeners, listener)
+}
+
+func (proxy *Proxy) registerLocalDoHListener(listener *net.TCPListener) {
+	proxy.localDoHListeners = append(proxy.localDoHListeners, listener)
 }
 
 func (proxy *Proxy) addDNSListener(listenAddrStr string) {
@@ -143,10 +161,10 @@ func (proxy *Proxy) addDNSListener(listenAddrStr string) {
 	FileDescriptorNum++
 
 	dlog.Noticef("Now listening to %v [UDP]", listenUDPAddr)
-	go proxy.udpListener(listenerUDP.(*net.UDPConn))
+	proxy.registerUdpListener(listenerUDP.(*net.UDPConn))
 
 	dlog.Noticef("Now listening to %v [TCP]", listenAddrStr)
-	go proxy.tcpListener(listenerTCP.(*net.TCPListener))
+	proxy.registerTcpListener(listenerTCP.(*net.TCPListener))
 }
 
 func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
@@ -187,8 +205,8 @@ func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
 	}
 	FileDescriptorNum++
 
+	proxy.registerLocalDoHListener(listenerTCP.(*net.TCPListener))
 	dlog.Noticef("Now listening to https://%v%v [DoH]", listenAddrStr, proxy.localDoHPath)
-	go proxy.localDoHListener(listenerTCP.(*net.TCPListener))
 }
 
 func (proxy *Proxy) StartProxy() {
@@ -200,6 +218,7 @@ func (proxy *Proxy) StartProxy() {
 	for _, registeredServer := range proxy.registeredServers {
 		proxy.serversInfo.registerServer(registeredServer.name, registeredServer.stamp)
 	}
+	proxy.startAcceptingClients()
 	liveServers, err := proxy.serversInfo.refresh(proxy)
 	if liveServers > 0 {
 		proxy.certIgnoreTimestamp = false
@@ -221,6 +240,7 @@ func (proxy *Proxy) StartProxy() {
 	go func() {
 		for {
 			clocksmith.Sleep(PrefetchSources(proxy.xTransport, proxy.sources))
+			runtime.GC()
 		}
 	}()
 	if len(proxy.serversInfo.registeredServers) > 0 {
@@ -235,6 +255,7 @@ func (proxy *Proxy) StartProxy() {
 				if liveServers > 0 {
 					proxy.certIgnoreTimestamp = false
 				}
+				runtime.GC()
 			}
 		}()
 	}
@@ -266,8 +287,8 @@ func (proxy *Proxy) udpListenerFromAddr(listenAddr *net.UDPAddr) error {
 	if err != nil {
 		return err
 	}
+	proxy.registerUdpListener(clientPc)
 	dlog.Noticef("Now listening to %v [UDP]", listenAddr)
-	go proxy.udpListener(clientPc)
 	return nil
 }
 
@@ -304,8 +325,8 @@ func (proxy *Proxy) tcpListenerFromAddr(listenAddr *net.TCPAddr) error {
 	if err != nil {
 		return err
 	}
+	proxy.registerTcpListener(acceptPc)
 	dlog.Noticef("Now listening to %v [TCP]", listenAddr)
-	go proxy.tcpListener(acceptPc)
 	return nil
 }
 
@@ -314,9 +335,24 @@ func (proxy *Proxy) localDoHListenerFromAddr(listenAddr *net.TCPAddr) error {
 	if err != nil {
 		return err
 	}
+	proxy.registerLocalDoHListener(acceptPc)
 	dlog.Noticef("Now listening to https://%v%v [DoH]", listenAddr, proxy.localDoHPath)
-	go proxy.localDoHListener(acceptPc)
 	return nil
+}
+
+func (proxy *Proxy) startAcceptingClients() {
+	for _, clientPc := range proxy.udpListeners {
+		go proxy.udpListener(clientPc)
+	}
+	proxy.udpListeners = nil
+	for _, acceptPc := range proxy.tcpListeners {
+		go proxy.tcpListener(acceptPc)
+	}
+	proxy.tcpListeners = nil
+	for _, acceptPc := range proxy.localDoHListeners {
+		go proxy.localDoHListener(acceptPc)
+	}
+	proxy.localDoHListeners = nil
 }
 
 func (proxy *Proxy) prepareForRelay(ip net.IP, port int, encryptedQuery *[]byte) {
