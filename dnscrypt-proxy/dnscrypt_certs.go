@@ -34,8 +34,12 @@ func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk
 	query := dns.Msg{}
 	query.SetQuestion(providerName, dns.TypeTXT)
 	if !strings.HasPrefix(providerName, "2.dnscrypt-cert.") {
-		dlog.Warnf("[%v] uses a non-standard provider name ('%v' doesn't start with '2.dnscrypt-cert.')", *serverName, providerName)
-		relayUDPAddr, relayTCPAddr = nil, nil
+		if relayUDPAddr != nil && !proxy.anonDirectCertFallback {
+			dlog.Warnf("[%v] uses a non-standard provider name, enable direct cert fallback to use with a relay ('%v' doesn't start with '2.dnscrypt-cert.')", *serverName, providerName)
+		} else {
+			dlog.Warnf("[%v] uses a non-standard provider name ('%v' doesn't start with '2.dnscrypt-cert.')", *serverName, providerName)
+			relayUDPAddr, relayTCPAddr = nil, nil
+		}
 	}
 	tryFragmentsSupport := true
 	if knownBugs.fragmentsBlocked {
@@ -100,6 +104,8 @@ func FetchCurrentDNSCryptCert(proxy *Proxy, serverName *string, proto string, pk
 				dlog.Warnf("[%v] certificate is about to expire -- if you don't manage this server, tell the server operator about it", *serverName)
 			} else if daysLeft <= 30 {
 				dlog.Infof("[%v] certificate will expire in %d days", *serverName, daysLeft)
+			} else {
+				dlog.Debugf("[%v] certificate still valid for %d days", *serverName, daysLeft)
 			}
 			certInfo.ForwardSecurity = false
 		} else {
@@ -256,7 +262,7 @@ func dnsExchange(proxy *Proxy, proto string, query *dns.Msg, serverAddress strin
 			return bestOption.response, bestOption.rtt, bestOption.fragmentsBlocked, nil
 		}
 
-		if relayUDPAddr == nil {
+		if relayUDPAddr == nil || !proxy.anonDirectCertFallback {
 			if err == nil {
 				err = errors.New("Unable to reach the server")
 			}

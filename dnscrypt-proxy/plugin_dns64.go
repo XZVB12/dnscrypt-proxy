@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/jedisct1/dlog"
 	"github.com/miekg/dns"
@@ -16,24 +17,26 @@ var (
 	rfc7050WKA2 = net.IPv4(192, 0, 0, 171)
 )
 
-type PluginDns64 struct {
+type PluginDNS64 struct {
 	pref64Mutex    *sync.RWMutex
 	pref64         []*net.IPNet
 	dns64Resolvers []string
 	ipv4Resolver   string
+	proxy          *Proxy
 }
 
-func (plugin *PluginDns64) Name() string {
+func (plugin *PluginDNS64) Name() string {
 	return "dns64"
 }
 
-func (plugin *PluginDns64) Description() string {
-	return "Synth DNS64 AAAA responses"
+func (plugin *PluginDNS64) Description() string {
+	return "Synthesize DNS64 AAAA responses"
 }
 
-func (plugin *PluginDns64) Init(proxy *Proxy) error {
+func (plugin *PluginDNS64) Init(proxy *Proxy) error {
 	plugin.ipv4Resolver = proxy.listenAddresses[0] //recursively to ourselves
 	plugin.pref64Mutex = new(sync.RWMutex)
+	plugin.proxy = proxy
 
 	if len(proxy.dns64Prefixes) != 0 {
 		plugin.pref64Mutex.RLock()
@@ -56,35 +59,42 @@ func (plugin *PluginDns64) Init(proxy *Proxy) error {
 	return nil
 }
 
-func (plugin *PluginDns64) Drop() error {
+func (plugin *PluginDNS64) Drop() error {
 	return nil
 }
 
-func (plugin *PluginDns64) Reload() error {
+func (plugin *PluginDNS64) Reload() error {
 	return nil
 }
 
-func (plugin *PluginDns64) Eval(pluginsState *PluginsState, msg *dns.Msg) error {
-	if !hasAAAAQuestion(msg) || hasAAAAAnswer(msg) {
+func (plugin *PluginDNS64) Eval(pluginsState *PluginsState, msg *dns.Msg) error {
+	if hasAAAAAnswer(msg) {
 		return nil
 	}
 
-	questions := msg.Question
-	if len(questions) != 1 {
-		return nil
-	}
-	question := questions[0]
-	if question.Qclass != dns.ClassINET {
+	question := pluginsState.questionMsg.Question[0]
+	if question.Qclass != dns.ClassINET || question.Qtype != dns.TypeAAAA {
 		return nil
 	}
 
-	msgA := new(dns.Msg)
+	msgA := pluginsState.questionMsg.Copy()
 	msgA.SetQuestion(question.Name, dns.TypeA)
+	msgAPacket, err := msgA.Pack()
+	if err != nil {
+		return err
+	}
 
-	client := new(dns.Client)
-	resp, _, err := client.Exchange(msgA, plugin.ipv4Resolver)
+	if !plugin.proxy.clientsCountInc() {
+		return errors.New("Too many concurrent connections to handle DNS64 subqueries")
+	}
+	respPacket := plugin.proxy.processIncomingQuery("trampoline", plugin.proxy.mainProto, msgAPacket, nil, nil, time.Now())
+	plugin.proxy.clientsCountDec()
+	resp := dns.Msg{}
+	if err := resp.Unpack(respPacket); err != nil {
+		return err
+	}
 
-	if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
+	if err != nil || resp.Rcode != dns.RcodeSuccess {
 		return nil
 	}
 
@@ -134,15 +144,6 @@ func (plugin *PluginDns64) Eval(pluginsState *PluginsState, msg *dns.Msg) error 
 	return nil
 }
 
-func hasAAAAQuestion(msg *dns.Msg) bool {
-	for _, question := range msg.Question {
-		if question.Qtype == dns.TypeAAAA {
-			return true
-		}
-	}
-	return false
-}
-
 func hasAAAAAnswer(msg *dns.Msg) bool {
 	for _, answer := range msg.Answer {
 		if answer.Header().Rrtype == dns.TypeAAAA {
@@ -166,7 +167,7 @@ func translateToIPv6(ipv4 net.IP, prefix *net.IPNet) net.IP {
 	return ipv6
 }
 
-func (plugin *PluginDns64) fetchPref64(resolver string) error {
+func (plugin *PluginDNS64) fetchPref64(resolver string) error {
 	msg := new(dns.Msg)
 	msg.SetQuestion(rfc7050WKN, dns.TypeAAAA)
 
@@ -227,7 +228,7 @@ func (plugin *PluginDns64) fetchPref64(resolver string) error {
 	return nil
 }
 
-func (plugin *PluginDns64) refreshPref64() error {
+func (plugin *PluginDNS64) refreshPref64() error {
 	for _, resolver := range plugin.dns64Resolvers {
 		if err := plugin.fetchPref64(resolver); err == nil {
 			break

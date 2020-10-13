@@ -3,17 +3,17 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/jedisct1/dlog"
 	"github.com/miekg/dns"
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 type PluginQueryLog struct {
-	logger        *lumberjack.Logger
+	logger        io.Writer
 	format        string
 	ignoredQtypes []string
 }
@@ -27,7 +27,7 @@ func (plugin *PluginQueryLog) Description() string {
 }
 
 func (plugin *PluginQueryLog) Init(proxy *Proxy) error {
-	plugin.logger = &lumberjack.Logger{LocalTime: true, MaxSize: proxy.logMaxSize, MaxAge: proxy.logMaxAge, MaxBackups: proxy.logMaxBackups, Filename: proxy.queryLogFile, Compress: true}
+	plugin.logger = Logger(proxy.logMaxSize, proxy.logMaxAge, proxy.logMaxBackups, proxy.queryLogFile)
 	plugin.format = proxy.queryLogFormat
 	plugin.ignoredQtypes = proxy.queryLogIgnoredQtypes
 
@@ -58,8 +58,10 @@ func (plugin *PluginQueryLog) Eval(pluginsState *PluginsState, msg *dns.Msg) err
 	var clientIPStr string
 	if pluginsState.clientProto == "udp" {
 		clientIPStr = (*pluginsState.clientAddr).(*net.UDPAddr).IP.String()
-	} else {
+	} else if pluginsState.clientProto == "tcp" {
 		clientIPStr = (*pluginsState.clientAddr).(*net.TCPAddr).IP.String()
+	} else {
+		clientIPStr = "-"
 	}
 	qName := pluginsState.qName
 

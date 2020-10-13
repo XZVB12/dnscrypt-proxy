@@ -102,6 +102,9 @@ func (proxy *Proxy) InitPluginsGlobals() error {
 
 	*queryPlugins = append(*queryPlugins, Plugin(new(PluginFirefox)))
 
+	if len(proxy.ednsClientSubnets) != 0 {
+		*queryPlugins = append(*queryPlugins, Plugin(new(PluginECS)))
+	}
 	if len(proxy.blockNameFile) != 0 {
 		*queryPlugins = append(*queryPlugins, Plugin(new(PluginBlockName)))
 	}
@@ -136,7 +139,7 @@ func (proxy *Proxy) InitPluginsGlobals() error {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginBlockIP)))
 	}
 	if len(proxy.dns64Resolvers) != 0 || len(proxy.dns64Prefixes) != 0 {
-		*responsePlugins = append(*responsePlugins, Plugin(new(PluginDns64)))
+		*responsePlugins = append(*responsePlugins, Plugin(new(PluginDNS64)))
 	}
 	if proxy.cache {
 		*responsePlugins = append(*responsePlugins, Plugin(new(PluginCacheResponse)))
@@ -263,6 +266,7 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 	if err != nil {
 		return packet, err
 	}
+	dlog.Debugf("Handling query for [%v]", qName)
 	pluginsState.qName = qName
 	pluginsState.questionMsg = &msg
 	if len(*pluginsGlobals.queryPlugins) == 0 && len(*pluginsGlobals.loggingPlugins) == 0 {
@@ -283,6 +287,7 @@ func (pluginsState *PluginsState) ApplyQueryPlugins(pluginsGlobals *PluginsGloba
 			break
 		}
 	}
+
 	packet2, err := msg.PackBuffer(packet)
 	if err != nil {
 		return packet, err

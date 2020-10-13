@@ -67,6 +67,7 @@ type Proxy struct {
 	blockIPFormat                  string
 	forwardFile                    string
 	cloakFile                      string
+	captivePortalFile              string
 	pluginsGlobals                 PluginsGlobals
 	sources                        []*Source
 	clientsCount                   uint32
@@ -83,15 +84,17 @@ type Proxy struct {
 	showCerts                      bool
 	dohCreds                       *map[string]DOHClientCreds
 	skipAnonIncompatbibleResolvers bool
+	anonDirectCertFallback         bool
 	dns64Prefixes                  []string
 	dns64Resolvers                 []string
+	ednsClientSubnets              []*net.IPNet
 }
 
-func (proxy *Proxy) registerUdpListener(conn *net.UDPConn) {
+func (proxy *Proxy) registerUDPListener(conn *net.UDPConn) {
 	proxy.udpListeners = append(proxy.udpListeners, conn)
 }
 
-func (proxy *Proxy) registerTcpListener(listener *net.TCPListener) {
+func (proxy *Proxy) registerTCPListener(listener *net.TCPListener) {
 	proxy.tcpListeners = append(proxy.tcpListeners, listener)
 }
 
@@ -148,23 +151,23 @@ func (proxy *Proxy) addDNSListener(listenAddrStr string) {
 	}
 
 	// child
-	listenerUDP, err := net.FilePacketConn(os.NewFile(uintptr(3+FileDescriptorNum), "listenerUDP"))
+	listenerUDP, err := net.FilePacketConn(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerUDP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
 	FileDescriptorNum++
 
-	listenerTCP, err := net.FileListener(os.NewFile(uintptr(3+FileDescriptorNum), "listenerTCP"))
+	listenerTCP, err := net.FileListener(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerTCP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
 	FileDescriptorNum++
 
 	dlog.Noticef("Now listening to %v [UDP]", listenUDPAddr)
-	proxy.registerUdpListener(listenerUDP.(*net.UDPConn))
+	proxy.registerUDPListener(listenerUDP.(*net.UDPConn))
 
 	dlog.Noticef("Now listening to %v [TCP]", listenAddrStr)
-	proxy.registerTcpListener(listenerTCP.(*net.TCPListener))
+	proxy.registerTCPListener(listenerTCP.(*net.TCPListener))
 }
 
 func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
@@ -199,7 +202,7 @@ func (proxy *Proxy) addLocalDoHListener(listenAddrStr string) {
 
 	// child
 
-	listenerTCP, err := net.FileListener(os.NewFile(uintptr(3+FileDescriptorNum), "listenerTCP"))
+	listenerTCP, err := net.FileListener(os.NewFile(InheritedDescriptorsBase+FileDescriptorNum, "listenerTCP"))
 	if err != nil {
 		dlog.Fatalf("Unable to switch to a different user: %v", err)
 	}
@@ -287,7 +290,7 @@ func (proxy *Proxy) udpListenerFromAddr(listenAddr *net.UDPAddr) error {
 	if err != nil {
 		return err
 	}
-	proxy.registerUdpListener(clientPc)
+	proxy.registerUDPListener(clientPc)
 	dlog.Noticef("Now listening to %v [UDP]", listenAddr)
 	return nil
 }
@@ -325,7 +328,7 @@ func (proxy *Proxy) tcpListenerFromAddr(listenAddr *net.TCPAddr) error {
 	if err != nil {
 		return err
 	}
-	proxy.registerTcpListener(acceptPc)
+	proxy.registerTCPListener(acceptPc)
 	dlog.Noticef("Now listening to %v [TCP]", listenAddr)
 	return nil
 }
