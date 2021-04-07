@@ -19,87 +19,88 @@ import (
 )
 
 type Proxy struct {
-	pluginsGlobals                 PluginsGlobals
-	serversInfo                    ServersInfo
-	questionSizeEstimator          QuestionSizeEstimator
-	registeredServers              []RegisteredServer
-	dns64Resolvers                 []string
-	dns64Prefixes                  []string
-	serversBlockingFragments       []string
-	ednsClientSubnets              []*net.IPNet
-	queryLogIgnoredQtypes          []string
-	localDoHListeners              []*net.TCPListener
-	queryMeta                      []string
-	udpListeners                   []*net.UDPConn
-	sources                        []*Source
-	tcpListeners                   []*net.TCPListener
-	registeredRelays               []RegisteredServer
-	listenAddresses                []string
-	localDoHListenAddresses        []string
-	xTransport                     *XTransport
-	dohCreds                       *map[string]DOHClientCreds
-	allWeeklyRanges                *map[string]WeeklyRanges
-	routes                         *map[string][]string
-	nxLogFormat                    string
-	localDoHCertFile               string
-	localDoHCertKeyFile            string
-	captivePortalFile              string
-	localDoHPath                   string
-	mainProto                      string
-	cloakFile                      string
-	forwardFile                    string
-	blockIPFormat                  string
-	blockIPLogFile                 string
-	allowedIPFile                  string
-	allowedIPFormat                string
-	allowedIPLogFile               string
-	queryLogFormat                 string
-	blockIPFile                    string
-	whitelistNameFormat            string
-	whitelistNameLogFile           string
-	blockNameLogFile               string
-	whitelistNameFile              string
-	blockNameFile                  string
-	queryLogFile                   string
-	blockedQueryResponse           string
-	userName                       string
-	nxLogFile                      string
-	blockNameFormat                string
-	proxySecretKey                 [32]byte
-	proxyPublicKey                 [32]byte
-	certRefreshDelayAfterFailure   time.Duration
-	timeout                        time.Duration
-	certRefreshDelay               time.Duration
-	cacheSize                      int
-	logMaxBackups                  int
-	logMaxAge                      int
-	logMaxSize                     int
-	cacheNegMinTTL                 uint32
-	rejectTTL                      uint32
-	cacheMaxTTL                    uint32
-	clientsCount                   uint32
-	maxClients                     uint32
-	cacheMinTTL                    uint32
-	cacheNegMaxTTL                 uint32
-	cloakTTL                       uint32
-	cache                          bool
-	pluginBlockIPv6                bool
-	ephemeralKeys                  bool
-	pluginBlockUnqualified         bool
-	showCerts                      bool
-	certIgnoreTimestamp            bool
-	skipAnonIncompatbibleResolvers bool
-	anonDirectCertFallback         bool
-	pluginBlockUndelegated         bool
-	child                          bool
-	daemonize                      bool
-	requiredProps                  stamps.ServerInformalProperties
-	ServerNames                    []string
-	DisabledServerNames            []string
-	SourceIPv4                     bool
-	SourceIPv6                     bool
-	SourceDNSCrypt                 bool
-	SourceDoH                      bool
+	pluginsGlobals                PluginsGlobals
+	serversInfo                   ServersInfo
+	questionSizeEstimator         QuestionSizeEstimator
+	registeredServers             []RegisteredServer
+	dns64Resolvers                []string
+	dns64Prefixes                 []string
+	serversBlockingFragments      []string
+	ednsClientSubnets             []*net.IPNet
+	queryLogIgnoredQtypes         []string
+	localDoHListeners             []*net.TCPListener
+	queryMeta                     []string
+	udpListeners                  []*net.UDPConn
+	sources                       []*Source
+	tcpListeners                  []*net.TCPListener
+	registeredRelays              []RegisteredServer
+	listenAddresses               []string
+	localDoHListenAddresses       []string
+	xTransport                    *XTransport
+	dohCreds                      *map[string]DOHClientCreds
+	allWeeklyRanges               *map[string]WeeklyRanges
+	routes                        *map[string][]string
+	captivePortalMap              *CaptivePortalMap
+	nxLogFormat                   string
+	localDoHCertFile              string
+	localDoHCertKeyFile           string
+	captivePortalMapFile          string
+	localDoHPath                  string
+	mainProto                     string
+	cloakFile                     string
+	forwardFile                   string
+	blockIPFormat                 string
+	blockIPLogFile                string
+	allowedIPFile                 string
+	allowedIPFormat               string
+	allowedIPLogFile              string
+	queryLogFormat                string
+	blockIPFile                   string
+	allowNameFile                 string
+	allowNameFormat               string
+	allowNameLogFile              string
+	blockNameLogFile              string
+	blockNameFormat               string
+	blockNameFile                 string
+	queryLogFile                  string
+	blockedQueryResponse          string
+	userName                      string
+	nxLogFile                     string
+	proxySecretKey                [32]byte
+	proxyPublicKey                [32]byte
+	certRefreshDelayAfterFailure  time.Duration
+	timeout                       time.Duration
+	certRefreshDelay              time.Duration
+	cacheSize                     int
+	logMaxBackups                 int
+	logMaxAge                     int
+	logMaxSize                    int
+	cacheNegMinTTL                uint32
+	rejectTTL                     uint32
+	cacheMaxTTL                   uint32
+	clientsCount                  uint32
+	maxClients                    uint32
+	cacheMinTTL                   uint32
+	cacheNegMaxTTL                uint32
+	cloakTTL                      uint32
+	cache                         bool
+	pluginBlockIPv6               bool
+	ephemeralKeys                 bool
+	pluginBlockUnqualified        bool
+	showCerts                     bool
+	certIgnoreTimestamp           bool
+	skipAnonIncompatibleResolvers bool
+	anonDirectCertFallback        bool
+	pluginBlockUndelegated        bool
+	child                         bool
+	daemonize                     bool
+	requiredProps                 stamps.ServerInformalProperties
+	ServerNames                   []string
+	DisabledServerNames           []string
+	SourceIPv4                    bool
+	SourceIPv6                    bool
+	SourceDNSCrypt                bool
+	SourceDoH                     bool
 }
 
 func (proxy *Proxy) registerUDPListener(conn *net.UDPConn) {
@@ -276,7 +277,6 @@ func (proxy *Proxy) StartProxy() {
 
 func (proxy *Proxy) updateRegisteredServers() error {
 	for _, source := range proxy.sources {
-		//dlog.Debugf(string(source.in))
 		registeredServers, err := source.Parse()
 		if err != nil {
 			if len(registeredServers) == 0 {
@@ -348,10 +348,12 @@ func (proxy *Proxy) updateRegisteredServers() error {
 				}
 			}
 		}
-
 	}
 	for _, registeredServer := range proxy.registeredServers {
 		proxy.serversInfo.registerServer(registeredServer.name, registeredServer.stamp)
+	}
+	for _, registeredRelay := range proxy.registeredRelays {
+		proxy.serversInfo.registerRelay(registeredRelay.name, registeredRelay.stamp)
 	}
 	return nil
 }
@@ -656,7 +658,7 @@ func (proxy *Proxy) processIncomingQuery(clientProto string, serverProto string,
 			tid := TransactionID(query)
 			SetTransactionID(query, 0)
 			serverInfo.noticeBegin(proxy)
-			serverResponse, tls, _, err := proxy.xTransport.DoHQuery(serverInfo.useGet, serverInfo.URL, query, proxy.timeout)
+			serverResponse, _, tls, _, err := proxy.xTransport.DoHQuery(serverInfo.useGet, serverInfo.URL, query, proxy.timeout)
 			SetTransactionID(query, tid)
 			if err == nil || tls == nil || !tls.HandshakeComplete {
 				response = nil
@@ -675,6 +677,42 @@ func (proxy *Proxy) processIncomingQuery(clientProto string, serverProto string,
 			}
 			if len(response) >= MinDNSPacketSize {
 				SetTransactionID(response, tid)
+			}
+		} else if serverInfo.Proto == stamps.StampProtoTypeODoHTarget {
+			tid := TransactionID(query)
+			target := serverInfo.odohTargets[0]
+			odohQuery, err := target.encryptQuery(query)
+			if err != nil {
+				dlog.Error("Failed to encrypt query")
+				response = nil
+			} else {
+				targetURL := serverInfo.URL
+				if serverInfo.Relay != nil && serverInfo.Relay.ODoH != nil {
+					targetURL = serverInfo.Relay.ODoH.url
+				}
+				responseBody, responseCode, _, _, err := proxy.xTransport.ObliviousDoHQuery(targetURL, odohQuery.odohMessage, proxy.timeout)
+				if err == nil && len(responseBody) > 0 && responseCode == 200 {
+					response, err = odohQuery.decryptResponse(responseBody)
+					if err != nil {
+						dlog.Error("Failed to decrypt response")
+						response = nil
+					}
+				} else if responseCode == 401 {
+					dlog.Notice("Forcing key update")
+					go proxy.serversInfo.refresh(proxy)
+					response = nil
+				} else {
+					dlog.Error("Failed to receive successful response")
+				}
+			}
+
+			if len(response) >= MinDNSPacketSize {
+				SetTransactionID(response, tid)
+			} else if response == nil {
+				pluginsState.returnCode = PluginsReturnCodeNetworkError
+				pluginsState.ApplyLoggingPlugins(&proxy.pluginsGlobals)
+				serverInfo.noticeFailure(proxy)
+				return
 			}
 		} else {
 			dlog.Fatal("Unsupported protocol")
@@ -717,7 +755,11 @@ func (proxy *Proxy) processIncomingQuery(clientProto string, serverProto string,
 		}
 	}
 	if len(response) < MinDNSPacketSize || len(response) > MaxDNSPacketSize {
-		pluginsState.returnCode = PluginsReturnCodeParseError
+		if len(response) == 0 {
+			pluginsState.returnCode = PluginsReturnCodeNotReady
+		} else {
+			pluginsState.returnCode = PluginsReturnCodeParseError
+		}
 		pluginsState.ApplyLoggingPlugins(&proxy.pluginsGlobals)
 		if serverInfo != nil {
 			serverInfo.noticeFailure(proxy)

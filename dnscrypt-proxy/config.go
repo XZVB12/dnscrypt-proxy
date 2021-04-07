@@ -70,7 +70,7 @@ type Config struct {
 	AllowIP                  AllowIPConfig               `toml:"allowed_ips"`
 	ForwardFile              string                      `toml:"forwarding_rules"`
 	CloakFile                string                      `toml:"cloaking_rules"`
-	CaptivePortalFile        string                      `toml:"captive_portal_handler"`
+	CaptivePortals           CaptivePortalsConfig        `toml:"captive_portals"`
 	StaticsConfig            map[string]StaticConfig     `toml:"static"`
 	SourcesConfig            map[string]SourceConfig     `toml:"sources"`
 	BrokenImplementations    BrokenImplementationsConfig `toml:"broken_implementations"`
@@ -82,8 +82,8 @@ type Config struct {
 	SourceIPv4               bool                        `toml:"ipv4_servers"`
 	SourceIPv6               bool                        `toml:"ipv6_servers"`
 	MaxClients               uint32                      `toml:"max_clients"`
-	FallbackResolver         string                      `toml:"fallback_resolver"`
-	FallbackResolvers        []string                    `toml:"fallback_resolvers"`
+	BootstrapResolversLegacy []string                    `toml:"fallback_resolvers"`
+	BootstrapResolvers       []string                    `toml:"bootstrap_resolvers"`
 	IgnoreSystemDNS          bool                        `toml:"ignore_system_dns"`
 	AllWeeklyRanges          map[string]WeeklyRangesStr  `toml:"schedules"`
 	LogMaxSize               int                         `toml:"log_files_max_size"`
@@ -132,7 +132,7 @@ func newConfig() Config {
 		SourceDNSCrypt:           true,
 		SourceDoH:                true,
 		MaxClients:               250,
-		FallbackResolvers:        []string{DefaultFallbackResolver},
+		BootstrapResolvers:       []string{DefaultBootstrapResolver},
 		IgnoreSystemDNS:          false,
 		LogMaxSize:               10,
 		LogMaxAge:                7,
@@ -147,8 +147,11 @@ func newConfig() Config {
 		BrokenImplementations: BrokenImplementationsConfig{
 			FragmentsBlocked: []string{
 				"cisco", "cisco-ipv6", "cisco-familyshield", "cisco-familyshield-ipv6",
-				"cleanbrowsing-adult", "cleanbrowsing-family-ipv6", "cleanbrowsing-family", "cleanbrowsing-security",
+				"cleanbrowsing-adult", "cleanbrowsing-adult-ipv6", "cleanbrowsing-family", "cleanbrowsing-family-ipv6", "cleanbrowsing-security", "cleanbrowsing-security-ipv6",
 			},
+		},
+		AnonymizedDNS: AnonymizedDNSConfig{
+			DirectCertFallback: true,
 		},
 	}
 }
@@ -272,7 +275,12 @@ type DNS64Config struct {
 	Resolvers []string `toml:"resolver"`
 }
 
+type CaptivePortalsConfig struct {
+	MapFile string `toml:"map_file"`
+}
+
 type ConfigFlags struct {
+	Resolve                 *string
 	List                    *bool
 	ListAll                 *bool
 	JSONOutput              *bool
@@ -310,6 +318,16 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if err != nil {
 		return err
 	}
+
+	if flags.Resolve != nil && len(*flags.Resolve) > 0 {
+		addr := "127.0.0.1:53"
+		if len(config.ListenAddresses) > 0 {
+			addr = config.ListenAddresses[0]
+		}
+		Resolve(addr, *flags.Resolve, len(config.ServerNames) == 1)
+		os.Exit(0)
+	}
+
 	if err := cdFileDir(foundConfigFile); err != nil {
 		return err
 	}
@@ -327,8 +345,8 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		if !*flags.Child {
 			FileDescriptors = append(FileDescriptors, dlog.GetFileDescriptor())
 		} else {
+			dlog.SetFileDescriptor(os.NewFile(uintptr(InheritedDescriptorsBase+FileDescriptorNum), "logFile"))
 			FileDescriptorNum++
-			dlog.SetFileDescriptor(os.NewFile(uintptr(3), "logFile"))
 		}
 	}
 	if !*flags.Child {
@@ -350,18 +368,18 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	proxy.xTransport.tlsDisableSessionTickets = config.TLSDisableSessionTickets
 	proxy.xTransport.tlsCipherSuite = config.TLSCipherSuite
 	proxy.xTransport.mainProto = proxy.mainProto
-	if len(config.FallbackResolver) > 0 {
-		config.FallbackResolvers = []string{config.FallbackResolver}
+	if len(config.BootstrapResolvers) == 0 && len(config.BootstrapResolversLegacy) > 0 {
+		config.BootstrapResolvers = config.BootstrapResolversLegacy
 	}
-	if len(config.FallbackResolvers) > 0 {
-		for _, resolver := range config.FallbackResolvers {
+	if len(config.BootstrapResolvers) > 0 {
+		for _, resolver := range config.BootstrapResolvers {
 			if err := isIPAndPort(resolver); err != nil {
-				return fmt.Errorf("Fallback resolver [%v]: %v", resolver, err)
+				return fmt.Errorf("Bootstrap resolver [%v]: %v", resolver, err)
 			}
 		}
 		proxy.xTransport.ignoreSystemDNS = config.IgnoreSystemDNS
 	}
-	proxy.xTransport.fallbackResolvers = config.FallbackResolvers
+	proxy.xTransport.bootstrapResolvers = config.BootstrapResolvers
 	proxy.xTransport.useIPv4 = config.SourceIPv4
 	proxy.xTransport.useIPv6 = config.SourceIPv6
 	proxy.xTransport.keepAlive = time.Duration(config.KeepAlive) * time.Second
@@ -503,10 +521,10 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	proxy.nxLogFormat = config.NxLog.Format
 
 	if len(config.BlockName.File) > 0 && len(config.BlockNameLegacy.File) > 0 {
-		return errors.New("Don't specify both [blocked_names] and [blacklist] sections - Update your config file.")
+		return errors.New("Don't specify both [blocked_names] and [blacklist] sections - Update your config file")
 	}
 	if len(config.BlockNameLegacy.File) > 0 {
-		dlog.Notice("Use of [blacklist] is deprecated - Update your config file.")
+		dlog.Notice("Use of [blacklist] is deprecated - Update your config file")
 		config.BlockName.File = config.BlockNameLegacy.File
 		config.BlockName.Format = config.BlockNameLegacy.Format
 		config.BlockName.LogFile = config.BlockNameLegacy.LogFile
@@ -524,10 +542,10 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	proxy.blockNameLogFile = config.BlockName.LogFile
 
 	if len(config.AllowedName.File) > 0 && len(config.WhitelistNameLegacy.File) > 0 {
-		return errors.New("Don't specify both [whitelist] and [allowed_names] sections - Update your config file.")
+		return errors.New("Don't specify both [whitelist] and [allowed_names] sections - Update your config file")
 	}
 	if len(config.WhitelistNameLegacy.File) > 0 {
-		dlog.Notice("Use of [whitelist] is deprecated - Update your config file.")
+		dlog.Notice("Use of [whitelist] is deprecated - Update your config file")
 		config.AllowedName.File = config.WhitelistNameLegacy.File
 		config.AllowedName.Format = config.WhitelistNameLegacy.Format
 		config.AllowedName.LogFile = config.WhitelistNameLegacy.LogFile
@@ -540,15 +558,15 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	if config.AllowedName.Format != "tsv" && config.AllowedName.Format != "ltsv" {
 		return errors.New("Unsupported allowed_names log format")
 	}
-	proxy.whitelistNameFile = config.AllowedName.File
-	proxy.whitelistNameFormat = config.AllowedName.Format
-	proxy.whitelistNameLogFile = config.AllowedName.LogFile
+	proxy.allowNameFile = config.AllowedName.File
+	proxy.allowNameFormat = config.AllowedName.Format
+	proxy.allowNameLogFile = config.AllowedName.LogFile
 
 	if len(config.BlockIP.File) > 0 && len(config.BlockIPLegacy.File) > 0 {
-		return errors.New("Don't specify both [blocked_ips] and [ip_blacklist] sections - Update your config file.")
+		return errors.New("Don't specify both [blocked_ips] and [ip_blacklist] sections - Update your config file")
 	}
 	if len(config.BlockIPLegacy.File) > 0 {
-		dlog.Notice("Use of [ip_blacklist] is deprecated - Update your config file.")
+		dlog.Notice("Use of [ip_blacklist] is deprecated - Update your config file")
 		config.BlockIP.File = config.BlockIPLegacy.File
 		config.BlockIP.Format = config.BlockIPLegacy.Format
 		config.BlockIP.LogFile = config.BlockIPLegacy.LogFile
@@ -579,7 +597,7 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 
 	proxy.forwardFile = config.ForwardFile
 	proxy.cloakFile = config.CloakFile
-	proxy.captivePortalFile = config.CaptivePortalFile
+	proxy.captivePortalMapFile = config.CaptivePortals.MapFile
 
 	allWeeklyRanges, err := ParseAllWeeklyRanges(config.AllWeeklyRanges)
 	if err != nil {
@@ -594,11 +612,11 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		}
 		proxy.routes = &routes
 	}
-	proxy.skipAnonIncompatbibleResolvers = config.AnonymizedDNS.SkipIncompatible
+	proxy.skipAnonIncompatibleResolvers = config.AnonymizedDNS.SkipIncompatible
 	proxy.anonDirectCertFallback = config.AnonymizedDNS.DirectCertFallback
 
 	if config.DoHClientX509AuthLegacy.Creds != nil {
-		return errors.New("[tls_client_auth] has been renamed to [doh_client_x509_auth] - Update your config file.")
+		return errors.New("[tls_client_auth] has been renamed to [doh_client_x509_auth] - Update your config file")
 	}
 	configClientCreds := config.DoHClientX509Auth.Creds
 	creds := make(map[string]DOHClientCreds)
@@ -659,8 +677,8 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	netprobeAddress := DefaultNetprobeAddress
 	if len(config.NetprobeAddress) > 0 {
 		netprobeAddress = config.NetprobeAddress
-	} else if len(config.FallbackResolvers) > 0 {
-		netprobeAddress = config.FallbackResolvers[0]
+	} else if len(config.BootstrapResolvers) > 0 {
+		netprobeAddress = config.BootstrapResolvers[0]
 	}
 	proxy.showCerts = *flags.ShowCerts || len(os.Getenv("SHOW_CERTS")) > 0
 	if !*flags.Check && !*flags.ShowCerts && !*flags.List && !*flags.ListAll {
@@ -680,7 +698,7 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 	// if 'userName' is set and we are the parent process drop privilege and exit
 	if len(proxy.userName) > 0 && !proxy.child {
 		proxy.dropPrivilege(proxy.userName, FileDescriptors)
-		return errors.New("Dropping privileges is not supporting on this operating system. Unset `user_name` in the configuration file.")
+		return errors.New("Dropping privileges is not supporting on this operating system. Unset `user_name` in the configuration file")
 	}
 	if !config.OfflineMode {
 		if err := config.loadSources(proxy); err != nil {
@@ -700,8 +718,8 @@ func ConfigLoad(proxy *Proxy, flags *ConfigFlags) error {
 		hasSpecificRoutes := false
 		for _, server := range proxy.registeredServers {
 			if via, ok := (*proxy.routes)[server.name]; ok {
-				if server.stamp.Proto != stamps.StampProtoTypeDNSCrypt {
-					dlog.Errorf("DNS anonymization is only supported with the DNSCrypt protocol - Connections to [%v] cannot be anonymized", server.name)
+				if server.stamp.Proto != stamps.StampProtoTypeDNSCrypt && server.stamp.Proto != stamps.StampProtoTypeODoHTarget {
+					dlog.Errorf("DNS anonymization is only supported with the DNSCrypt and ODoH protocols - Connections to [%v] cannot be anonymized", server.name)
 				} else {
 					dlog.Noticef("Anonymized DNS: routing [%v] via %v", server.name, via)
 				}
@@ -770,11 +788,13 @@ func (config *Config) printRegisteredServers(proxy *Proxy, jsonOutput bool) erro
 func (config *Config) loadSources(proxy *Proxy) error {
 	for cfgSourceName, cfgSource_ := range config.SourcesConfig {
 		cfgSource := cfgSource_
+		rand.Shuffle(len(cfgSource.URLs), func(i, j int) {
+			cfgSource.URLs[i], cfgSource.URLs[j] = cfgSource.URLs[j], cfgSource.URLs[i]
+		})
 		if err := config.loadSource(proxy, cfgSourceName, &cfgSource); err != nil {
 			return err
 		}
 	}
-	proxy.updateRegisteredServers()
 	for name, config := range config.StaticsConfig {
 		if stamp, err := stamps.NewServerStampFromString(config.Stamp); err == nil {
 			if stamp.Proto == stamps.StampProtoTypeDNSCryptRelay || stamp.Proto == stamps.StampProtoTypeODoHRelay {
@@ -803,10 +823,15 @@ func (config *Config) loadSources(proxy *Proxy) error {
 		}
 		proxy.registeredServers = append(proxy.registeredServers, RegisteredServer{name: serverName, stamp: stamp})
 	}
-	rand.Shuffle(len(proxy.registeredServers), func(i, j int) {
-		proxy.registeredServers[i], proxy.registeredServers[j] = proxy.registeredServers[j], proxy.registeredServers[i]
+	proxy.updateRegisteredServers()
+	rs1 := proxy.registeredServers
+	rs2 := proxy.serversInfo.registeredServers
+	rand.Shuffle(len(rs1), func(i, j int) {
+		rs1[i], rs1[j] = rs1[j], rs1[i]
 	})
-
+	rand.Shuffle(len(rs2), func(i, j int) {
+		rs2[i], rs2[j] = rs2[j], rs2[i]
+	})
 	return nil
 }
 
